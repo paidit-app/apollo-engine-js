@@ -4,7 +4,8 @@ const { graphqlExpress } = require('apollo-server-express');
 const bodyParser = require('body-parser');
 const { createServer } = require('net');
 const { Writable } = require('stream');
-
+const { writeFileSync, unlinkSync, renameSync, readFileSync } = require('fs');
+const tmp = require('tmp');
 const { assert } = require('chai');
 const isRunning = require('is-running');
 
@@ -110,6 +111,57 @@ describe('engine', () => {
 
       await engine.start();
       return verifyEndpointSuccess(`http://localhost:${port}/graphql`, false);
+    });
+
+    it('allows reloading config from file with useConfigPrecisely', async () => {
+      const tmpConfig = tmp.fileSync({discardDescriptor: true});
+      const tmpLog = tmp.fileSync({discardDescriptor: true});
+      unlinkSync(tmpLog.name);
+
+      const defaultPort = gqlServer('/graphql');
+
+      const config = {
+        apiKey: "faked",
+        reporting: {
+          disabled: true
+        },
+        origins: [{
+          http: {
+            url: `http://127.0.0.1:${defaultPort}/graphql`,
+          },
+        }],
+        frontends: [{
+          host: '127.0.0.1',
+          port: 3000,
+          endpoint: '/graphql',
+        }],
+      };
+      writeFileSync(tmpConfig.name, JSON.stringify(config));
+
+      engine = new Engine({
+        endpoint: '/graphql',
+        engineConfig: tmpConfig.name,
+        useConfigPrecisely: true,
+        graphqlPort: defaultPort,
+        proxyStderrStream: hideProxyErrorStream(),
+      });
+      engine.extraArgs = ['-config-reload-file=5ms'];
+      app.use(engine.expressMiddleware());
+
+      await engine.start();
+      await verifyEndpointSuccess(`http://localhost:3000/graphql`, false);
+
+      config.logging = {
+        request: {
+          destination: tmpLog.name,
+        },
+      };
+      writeFileSync(tmpConfig.name + '.atomic', JSON.stringify(config));
+      renameSync(tmpConfig.name + '.atomic', tmpConfig.name);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      await verifyEndpointSuccess(`http://localhost:3000/graphql`, false);
+      // Verify the request log exists.
+      readFileSync(tmpLog.name);
     });
 
     it('appends configuration', done => {
